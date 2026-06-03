@@ -3,3 +3,5 @@ pydantic>=2.7.0
 python-dotenv>=1.0.1
 pathspec>=0.12.1
 Pillow>=10.0.0
+fastapi>=0.111.0
+uvicorn>=0.30.0

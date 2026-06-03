@@ -1,6 +1,8 @@
 .env
 __pycache__
-venv
+.venv
 .DS_Store
-samples/*
-output/*
+samples
+output
+
+mock_data.json
