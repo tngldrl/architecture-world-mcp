@@ -196,3 +196,26 @@ Partial Analyses (from various chunks):
         generation_config={"temperature": 0.1, "response_mime_type": "application/json", "response_schema": vertex_schema}
     )
     return response.text
+
+from vertexai.generative_models import Content, Part
+
+def chat_with_character(system_prompt: str, history: list, new_message: str, project_id: str, location: str = "us-central1") -> str:
+    """Phase 3: Chat with a specific character agent."""
+    vertexai.init(project=project_id, location=location)
+    
+    # Configure the persona
+    model = GenerativeModel("gemini-2.5-flash", system_instruction=[system_prompt])
+    
+    # Reconstruct history
+    chat_history = []
+    for msg in history:
+        role = msg.get("role")
+        # vertexai expects 'user' or 'model'
+        if role not in ["user", "model"]:
+            role = "user"
+        content = msg.get("content", "")
+        chat_history.append(Content(role=role, parts=[Part.from_text(content)]))
+        
+    chat_session = model.start_chat(history=chat_history)
+    response = chat_session.send_message(new_message)
+    return response.text

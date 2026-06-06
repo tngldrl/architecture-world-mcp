@@ -6,7 +6,7 @@ import json
 from dotenv import load_dotenv
 
 from scanner import scan_code_chunks, scan_metadata
-from analyzer import extract_skeleton, extract_partial_graph, synthesize_architecture
+from analyzer import extract_skeleton, extract_partial_graph, synthesize_architecture, chat_with_character
 from generator import generate_avatar
 
 load_dotenv()
@@ -77,6 +77,31 @@ def analyze(req: AnalyzeRequest):
             
         return data
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class Message(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    system_prompt: str
+    history: list[Message]
+    new_message: str
+
+@app.post("/chat")
+def chat(req: ChatRequest):
+    if not GCP_PROJECT_ID:
+        raise HTTPException(status_code=500, detail="GCP_PROJECT_ID is not configured.")
+    try:
+        history_dicts = [{"role": msg.role, "content": msg.content} for msg in req.history]
+        response_text = chat_with_character(
+            system_prompt=req.system_prompt,
+            history=history_dicts,
+            new_message=req.new_message,
+            project_id=GCP_PROJECT_ID
+        )
+        return {"response": response_text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
