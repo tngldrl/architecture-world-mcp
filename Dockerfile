@@ -18,5 +18,5 @@ COPY . .
 # Expose application port
 EXPOSE 8001
 
-# Run MCP server
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8001"]
+# Run MCP server on the port injected by Cloud Run
+CMD ["sh", "-c", "uvicorn server:app --host 0.0.0.0 --port ${PORT:-8001}"]
