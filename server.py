@@ -97,9 +97,8 @@ def run_async_analysis(repo_urls: list[str], callback_url: str, project_id: str)
             if not os.path.exists(image_path):
                 generate_avatar(prompt, image_path, GCP_PROJECT_ID)
             
-            # Update the avatar URL in the response
-            # Note: Hardcoded to localhost:8001 for MVP
-            ms["avatar_image_url"] = f"http://localhost:8001/static/avatars/{image_filename}"
+            mcp_service_url = os.getenv("MCP_SERVICE_URL", "http://localhost:8001")
+            ms["avatar_image_url"] = f"{mcp_service_url}/static/avatars/{image_filename}"
             
         # Send callback with success status
         callback_payload = {
