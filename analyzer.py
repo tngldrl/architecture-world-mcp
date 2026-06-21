@@ -57,6 +57,8 @@ Roles:
 
 For each microservice, the `role_type` should be one of the above titles, and the `avatar_prompt` MUST describe only the animal character itself performing this role (e.g., wearing the appropriate uniform, holding utensils/tools, or performing actions). The prompt MUST NOT describe any restaurant environment, table, kitchen, floor, background scenery, room, or setting.
 
+You must also generate a second prompt `avatar_chat_prompt` for a chat-specific avatar. The `avatar_chat_prompt` MUST describe the exact same animal character (same animal type, colors, outfit, uniform, and features) as in `avatar_prompt` to maintain complete visual consistency. However, instead of the action/pose in `avatar_prompt`, the character in `avatar_chat_prompt` MUST be facing forward (looking directly at the user) and speaking cheerfully with a friendly smile, as if introducing or explaining themselves to the user. Like `avatar_prompt`, it MUST NOT describe any background.
+
 CRITICAL VISUAL CONSTRAINTS for `avatar_prompt` (Integrate these strictly in English):
 1. Scale/Complexity -> Animal Size/Type: If the service is small/low complexity, choose a small agile animal (e.g., squirrel, bird). If it is large/complex, choose a large imposing animal (e.g., elephant, bear).
 2. Importance/Centrality -> Outfit/Aura: If the service is highly important/central, give them a highly decorated, luxurious uniform or a commanding aura. If peripheral/low importance, give them a simple basic uniform or apron.
@@ -64,6 +66,13 @@ CRITICAL VISUAL CONSTRAINTS for `avatar_prompt` (Integrate these strictly in Eng
 4. The background MUST be completely flat, solid, and uniform chroma-key green. The prompt MUST end with: "The entire background is a single flat solid pure chroma-key green color (RGB: 0, 255, 0) with absolutely no details, no shadows, no flooring, no lighting effects on the background, and no scenery. The character is completely isolated against this flat green background."
 5. The art style MUST follow a Pokemon-style creature design. Add the following to the prompt: "Art style: Pokemon-style creature art, anime monster mascot design, extremely oversized sparkling eyes with large white catchlight highlights (eyes are the most prominent facial feature), super-deformed chibi proportions (large head, tiny body), thick bold black outlines, bright cel-shading, vivid saturated colors."
 6. NO Background Contradiction: Do NOT include any descriptions of environments, locations, floor textures, ground shadows, or environment lighting that could contradict the flat green background instruction.
+
+CRITICAL VISUAL CONSTRAINTS for `avatar_chat_prompt` (Integrate these strictly in English):
+1. Copy the exact same animal, colors, clothing, and details from `avatar_prompt` for visual identity.
+2. The prompt MUST start with: "Full-body shot of the character, isolated, facing forward, speaking cheerfully with a friendly smile, "
+3. The background MUST be completely flat, solid, and uniform chroma-key green. The prompt MUST end with: "The entire background is a single flat solid pure chroma-key green color (RGB: 0, 255, 0) with absolutely no details, no shadows, no flooring, no lighting effects on the background, and no scenery. The character is completely isolated against this flat green background."
+4. The art style MUST follow the exact same Pokemon-style creature design. Add the following to the prompt: "Art style: Pokemon-style creature art, anime monster mascot design, extremely oversized sparkling eyes with large white catchlight highlights (eyes are the most prominent facial feature), super-deformed chibi proportions (large head, tiny body), thick bold black outlines, bright cel-shading, vivid saturated colors."
+5. NO Background Contradiction: Do NOT include any descriptions of environments, locations, floor textures, ground shadows, or environment lighting that could contradict the flat green background instruction.
 """
 
 def extract_skeleton(metadata_context: str, project_id: str, location: str = "us-central1") -> str:
@@ -196,6 +205,7 @@ Code Chunk Context:
                             }
                         },
                         "avatar_prompt": {"type": "STRING"},
+                        "avatar_chat_prompt": {"type": "STRING"},
                         "technologies": {
                             "type": "ARRAY",
                             "items": {"type": "STRING"},
@@ -224,7 +234,7 @@ Code Chunk Context:
                             }
                         }
                     },
-                    "required": ["name", "description", "scale_and_complexity", "scale_tier", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt", "key_files", "technologies"]
+                    "required": ["name", "description", "scale_and_complexity", "scale_tier", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt", "avatar_chat_prompt", "key_files", "technologies"]
                 }
             }
         },
@@ -260,10 +270,11 @@ def synthesize_architecture(partial_graphs: list, project_id: str, location: str
                 # Keep the longest (most detailed) avatar prompt
                 role_type = ms.get("role_type")
                 avatar_prompt = ms.get("avatar_prompt")
+                avatar_chat_prompt = ms.get("avatar_chat_prompt")
                 if avatar_prompt:
                     current_best = backup_prompts.get(ms_name)
                     if not current_best or len(avatar_prompt) > len(current_best[1]):
-                        backup_prompts[ms_name] = (role_type, avatar_prompt)
+                        backup_prompts[ms_name] = (role_type, avatar_prompt, avatar_chat_prompt)
                 
                 # Gather unique key_files
                 kfs = ms.get("key_files", [])
@@ -359,6 +370,7 @@ Partial Analyses (from various chunks):
                              }
                         },
                         "avatar_prompt": {"type": "STRING"},
+                        "avatar_chat_prompt": {"type": "STRING"},
                         "key_files": {
                             "type": "ARRAY",
                             "description": "Key source files for this service, used as exploration anchors during chat. Max 10 entries.",
@@ -404,7 +416,7 @@ Partial Analyses (from various chunks):
                             "description": "Logical placement attributes for calculating 2D coordinates."
                         }
                     },
-                    "required": ["name", "description", "scale_and_complexity", "scale_tier", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt", "layout_metadata", "key_files", "technologies"]
+                    "required": ["name", "description", "scale_and_complexity", "scale_tier", "importance_and_centrality", "role_type", "repository_url", "dependencies", "avatar_prompt", "avatar_chat_prompt", "layout_metadata", "key_files", "technologies"]
                 }
             }
         },
@@ -434,7 +446,7 @@ Partial Analyses (from various chunks):
             # Restore avatar prompt if it's missing or significantly shortened (< 70% of original)
             backup = backup_prompts.get(ms_name)
             if backup:
-                role_type, avatar_prompt = backup
+                role_type, avatar_prompt, avatar_chat_prompt = backup
                 current_prompt = ms.get("avatar_prompt", "")
                 if not current_prompt or len(current_prompt) < len(avatar_prompt) * 0.7:
                     ms["avatar_prompt"] = avatar_prompt
@@ -442,6 +454,13 @@ Partial Analyses (from various chunks):
                         ms["role_type"] = role_type
                     modified = True
                     print(f"Deterministic recovery: Restored original avatar_prompt for microservice '{ms_name}'")
+                
+                # Restore avatar_chat_prompt if it's missing or significantly shortened (< 70% of original)
+                current_chat_prompt = ms.get("avatar_chat_prompt", "")
+                if avatar_chat_prompt and (not current_chat_prompt or len(current_chat_prompt) < len(avatar_chat_prompt) * 0.7):
+                    ms["avatar_chat_prompt"] = avatar_chat_prompt
+                    modified = True
+                    print(f"Deterministic recovery: Restored original avatar_chat_prompt for microservice '{ms_name}'")
             
             # Deterministically merge missing key_files back (up to 10 max)
             backup_kfs = backup_key_files.get(ms_name)

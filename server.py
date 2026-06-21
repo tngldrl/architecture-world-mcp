@@ -306,6 +306,26 @@ def upload_to_gcs(local_path: str, bucket_name: str, destination_blob_name: str)
         print(f"Failed to upload {local_path} to GCS: {e}")
         return False
 
+def process_single_avatar(prompt: str, filename: str, url_key: str, ms_dict: dict, output_dir: str, gcp_project_id: str, bucket_name: Optional[str]):
+    image_path = os.path.join(output_dir, filename)
+    print(f"Generating avatar for prompt: '{prompt[:60]}...' saved to {image_path}", flush=True)
+    if generate_avatar(prompt, image_path, gcp_project_id):
+        try:
+            make_background_transparent(image_path)
+            print(f"Successfully removed background for {filename}", flush=True)
+        except Exception as bg_err:
+            print(f"Failed to remove background for {filename}: {bg_err}", flush=True)
+            
+    uploaded = False
+    if bucket_name:
+        uploaded = upload_to_gcs(image_path, bucket_name, filename)
+        
+    if uploaded:
+        ms_dict[url_key] = f"https://storage.googleapis.com/{bucket_name}/{filename}"
+    else:
+        mcp_service_url = os.getenv("MCP_SERVICE_URL", "http://localhost:8001")
+        ms_dict[url_key] = f"{mcp_service_url}/static/avatars/{filename}"
+
 def run_async_analysis(
     repo_urls: list[str],
     callback_url: str,
@@ -361,12 +381,21 @@ def run_async_analysis(
         # PHASE 2
         code_chunks = scan_code_chunks(repo_configs)
         partial_graphs = []
-        for i, chunk_context in enumerate(code_chunks):
-            try:
-                partial_graph = extract_partial_graph(chunk_context, skeleton_json, GCP_PROJECT_ID)
-                partial_graphs.append(partial_graph)
-            except Exception as e:
-                print(f"Failed Chunk {i+1}: {e}")
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        print(f"Analyzing {len(code_chunks)} code chunks in parallel...", flush=True)
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_chunk = {
+                executor.submit(extract_partial_graph, chunk, skeleton_json, GCP_PROJECT_ID): idx 
+                for idx, chunk in enumerate(code_chunks)
+            }
+            for future in as_completed(future_to_chunk):
+                idx = future_to_chunk[future]
+                try:
+                    partial_graph = future.result()
+                    partial_graphs.append(partial_graph)
+                    print(f"Successfully analyzed chunk {idx+1}", flush=True)
+                except Exception as e:
+                    print(f"Failed Chunk {idx+1}: {e}", flush=True)
                 
         if not partial_graphs:
             raise Exception("No chunks were successfully analyzed.")
@@ -392,37 +421,47 @@ def run_async_analysis(
                 except Exception as rm_err:
                     print(f"Could not remove stale avatar {existing_file}: {rm_err}")
 
+        bucket_name = f"{GCP_PROJECT_ID}-avatars" if GCP_PROJECT_ID else None
+        avatar_tasks = []
         for ms in microservices:
             name = ms.get("name", "unknown")
-            prompt = ms.get("avatar_prompt", "")
+            avatar_prompt = ms.get("avatar_prompt", "")
+            avatar_chat_prompt = ms.get("avatar_chat_prompt", "")
             
-            if not prompt:
-                continue
-                
             safe_name = "".join([c for c in name if c.isalpha() or c.isdigit() or c==' ']).rstrip().replace(" ", "_").lower()
-            # Include project_id in the filename to avoid cross-project collisions
-            image_filename = f"{safe_project_id}_{safe_name}.png"
-            image_path = os.path.join(output_dir, image_filename)
             
-            # Always regenerate to reflect the latest prompt (no skip-if-exists)
-            if generate_avatar(prompt, image_path, GCP_PROJECT_ID):
-                try:
-                    make_background_transparent(image_path)
-                    print(f"Successfully removed background from avatar for {name}")
-                except Exception as bg_err:
-                    print(f"Failed to remove background from avatar for {name}: {bg_err}")
-            
-            # Upload to GCS if GCP_PROJECT_ID is configured
-            bucket_name = f"{GCP_PROJECT_ID}-avatars" if GCP_PROJECT_ID else None
-            uploaded = False
-            if bucket_name:
-                uploaded = upload_to_gcs(image_path, bucket_name, image_filename)
+            # Map avatar task
+            if avatar_prompt:
+                image_filename = f"{safe_project_id}_{safe_name}.png"
+                avatar_tasks.append((avatar_prompt, image_filename, "avatar_image_url", ms))
                 
-            if uploaded:
-                ms["avatar_image_url"] = f"https://storage.googleapis.com/{bucket_name}/{image_filename}"
-            else:
-                mcp_service_url = os.getenv("MCP_SERVICE_URL", "http://localhost:8001")
-                ms["avatar_image_url"] = f"{mcp_service_url}/static/avatars/{image_filename}"
+            # Chat avatar task
+            if avatar_chat_prompt:
+                chat_image_filename = f"{safe_project_id}_{safe_name}_chat.png"
+                avatar_tasks.append((avatar_chat_prompt, chat_image_filename, "avatar_chat_image_url", ms))
+                
+        if avatar_tasks:
+            print(f"Generating {len(avatar_tasks)} avatars in parallel...", flush=True)
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                futures = [
+                    executor.submit(
+                        process_single_avatar,
+                        prompt,
+                        filename,
+                        url_key,
+                        ms,
+                        output_dir,
+                        GCP_PROJECT_ID,
+                        bucket_name
+                    )
+                    for prompt, filename, url_key, ms in avatar_tasks
+                ]
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        print(f"Error during parallel avatar processing: {e}", flush=True)
             
         # Send callback with success status
         callback_payload = {
