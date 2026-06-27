@@ -19,7 +19,32 @@ from PIL import Image
 load_dotenv()
 GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID")
 
+cancelled_projects = set()
+
+class CancelRequest(BaseModel):
+    project_id: str
+
 app = FastAPI(title="Architecture World MCP Server")
+
+@app.post("/cancel")
+def cancel(req: CancelRequest):
+    cancelled_projects.add(req.project_id)
+    print(f"Cancellation registered for project {req.project_id}")
+    return {"status": "cancellation_registered"}
+
+def update_progress(project_id: str, callback_url: str, progress_message: str):
+    print(f"Progress [{project_id}]: {progress_message}")
+    payload = {
+        "project_id": project_id,
+        "status": "progress",
+        "progress_message": progress_message
+    }
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.post(callback_url, json=payload)
+            resp.raise_for_status()
+    except Exception as e:
+        print(f"Failed to send progress callback to {callback_url}: {e}")
 
 # Serve avatars statically
 output_dir = "output/avatars"
@@ -336,12 +361,19 @@ def run_async_analysis(
     repo_configs = []
     
     try:
+        if project_id in cancelled_projects:
+            raise Exception("Analysis cancelled by user")
+            
         # Clone each repository dynamically
-        for url in repo_urls:
+        for idx, url in enumerate(repo_urls):
+            if project_id in cancelled_projects:
+                raise Exception("Analysis cancelled by user")
             url_str = url.strip()
             if not url_str:
                 continue
                 
+            update_progress(project_id, callback_url, f"Cloning repository ({idx+1}/{len(repo_urls)})...")
+            
             # Build authenticated clone URL if token is provided
             clone_url = url_str
             if github_installation_access_token:
@@ -374,12 +406,20 @@ def run_async_analysis(
         if not repo_configs:
             raise Exception("No valid repositories to analyze.")
 
+        if project_id in cancelled_projects:
+            raise Exception("Analysis cancelled by user")
+
         # PHASE 1
+        update_progress(project_id, callback_url, "Extracting architecture skeleton...")
         metadata_context = scan_metadata(repo_configs)
         skeleton_json = extract_skeleton(metadata_context, GCP_PROJECT_ID)
         
         # PHASE 2
+        if project_id in cancelled_projects:
+            raise Exception("Analysis cancelled by user")
+            
         code_chunks = scan_code_chunks(repo_configs)
+        update_progress(project_id, callback_url, f"Analyzing code chunks (0/{len(code_chunks)})...")
         partial_graphs = []
         from concurrent.futures import ThreadPoolExecutor, as_completed
         print(f"Analyzing {len(code_chunks)} code chunks in parallel...", flush=True)
@@ -388,7 +428,10 @@ def run_async_analysis(
                 executor.submit(extract_partial_graph, chunk, skeleton_json, GCP_PROJECT_ID): idx 
                 for idx, chunk in enumerate(code_chunks)
             }
+            completed_chunks = 0
             for future in as_completed(future_to_chunk):
+                if project_id in cancelled_projects:
+                    raise Exception("Analysis cancelled by user")
                 idx = future_to_chunk[future]
                 try:
                     partial_graph = future.result()
@@ -396,21 +439,28 @@ def run_async_analysis(
                     print(f"Successfully analyzed chunk {idx+1}", flush=True)
                 except Exception as e:
                     print(f"Failed Chunk {idx+1}: {e}", flush=True)
+                completed_chunks += 1
+                update_progress(project_id, callback_url, f"Analyzing code chunks ({completed_chunks}/{len(code_chunks)})...")
                 
         if not partial_graphs:
             raise Exception("No chunks were successfully analyzed.")
             
         # PHASE 3
+        if project_id in cancelled_projects:
+            raise Exception("Analysis cancelled by user")
+        update_progress(project_id, callback_url, "Synthesizing logical architecture...")
+        
         final_architecture_json = synthesize_architecture(partial_graphs, GCP_PROJECT_ID)
         data = json.loads(final_architecture_json)
         data = calculate_layout_coordinates(data)
         
         # PHASE 4: Avatars
+        if project_id in cancelled_projects:
+            raise Exception("Analysis cancelled by user")
+            
         microservices = data.get("microservices", [])
 
         # Clean up stale avatar files from previous analyses of the same project.
-        # Only files prefixed with this project's safe_project_id are removed;
-        # other projects' files are left untouched.
         safe_project_id = "".join([c for c in project_id if c.isalpha() or c.isdigit() or c=='-']).lower()
         prefix = f"{safe_project_id}_"
         for existing_file in os.listdir(output_dir):
@@ -441,6 +491,7 @@ def run_async_analysis(
                 avatar_tasks.append((avatar_chat_prompt, chat_image_filename, "avatar_chat_image_url", ms))
                 
         if avatar_tasks:
+            update_progress(project_id, callback_url, f"Generating avatars (0/{len(avatar_tasks)})...")
             print(f"Generating {len(avatar_tasks)} avatars in parallel...", flush=True)
             from concurrent.futures import ThreadPoolExecutor, as_completed
             with ThreadPoolExecutor(max_workers=3) as executor:
@@ -457,11 +508,16 @@ def run_async_analysis(
                     )
                     for prompt, filename, url_key, ms in avatar_tasks
                 ]
+                completed_avatars = 0
                 for future in as_completed(futures):
+                    if project_id in cancelled_projects:
+                        raise Exception("Analysis cancelled by user")
                     try:
                         future.result()
                     except Exception as e:
                         print(f"Error during parallel avatar processing: {e}", flush=True)
+                    completed_avatars += 1
+                    update_progress(project_id, callback_url, f"Generating avatars ({completed_avatars}/{len(avatar_tasks)})...")
             
         # Send callback with success status
         callback_payload = {

@@ -9,7 +9,7 @@ def generate_avatar(prompt: str, output_path: str, project_id: str, locations: l
     Supports a list of target locations with automatic fallback in case of transient quota errors.
     """
     if locations is None:
-        locations = ["us-central1", "global"]
+        locations = ["us-central1", "us-east4", "europe-west9", "asia-northeast1"]
         
     max_retries = 3
     base_delay = 5
